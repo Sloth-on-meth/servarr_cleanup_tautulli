@@ -132,8 +132,14 @@ class SonarrPlexAnalyzer:
             from xml.etree import ElementTree
             root = ElementTree.fromstring(response.content)
             
-            # Find the series
-            series = root.find(f".//Video[@title='{series_title}']")
+            # Find the series - iterate through all Video elements instead of using XPath with title attribute
+            # to avoid issues with special characters in titles
+            series = None
+            for video in root.findall('.//Video'):
+                if video.get('title') == series_title:
+                    series = video
+                    break
+                    
             if not series:
                 print(f"Warning: Series '{series_title}' not found in Plex.")
                 return False
@@ -161,6 +167,11 @@ class SonarrPlexAnalyzer:
             return False
         except requests.exceptions.RequestException as e:
             print(f"Error checking Plex watch history for '{series_title}': {e}")
+            return False
+        except Exception as e:
+            print(f"Error processing '{series_title}': {e}")
+            # If there's an error processing this show, we'll assume it's not watched
+            # to be safe (so it shows up in the report)
             return False
     
     def generate_report(self, limit: int = 100, months: int = 2) -> None:

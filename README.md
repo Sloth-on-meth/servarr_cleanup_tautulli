@@ -19,13 +19,13 @@ This script analyzes your Sonarr library, checks Plex watch history, and generat
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/sonarr_plex_analyzer.git
-   cd sonarr_plex_analyzer
+   git clone https://github.com/Sloth-on-meth/servarr_cleanup_tautulli.git
+   cd servarr_cleanup_tautulli
    ```
 
 2. Install required packages:
    ```
-   pip install requests
+   pip install -r requirements.txt
    ```
 
 3. Configure the application (see Configuration section)
