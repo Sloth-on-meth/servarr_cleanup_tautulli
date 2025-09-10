@@ -10,17 +10,20 @@ import os
 import sys
 import json
 import time
+import re
 import datetime
 import requests
 import argparse
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from configparser import ConfigParser
+from difflib import SequenceMatcher
 
 class SonarrTautulliAnalyzer:
-    def __init__(self, config_file: str, verbose: bool = False):
+    def __init__(self, config_file: str, verbose: bool = False, debug: bool = False):
         """Initialize the analyzer with configuration from the config file."""
         self.config = ConfigParser()
         self.verbose = verbose
+        self.debug = debug
         
         if not os.path.exists(config_file):
             print(f"Error: Config file {config_file} not found.")
@@ -36,6 +39,7 @@ class SonarrTautulliAnalyzer:
         # Tautulli configuration
         self.tautulli_url = self.config.get('tautulli', 'url')
         self.tautulli_api_key = self.config.get('tautulli', 'api_key')
+        self.tautulli_library_name = self.config.get('tautulli', 'library_name', fallback='TV Shows')
         
         # Plex configuration (still needed for some operations)
         self.plex_url = self.config.get('plex', 'url')
@@ -109,6 +113,20 @@ class SonarrTautulliAnalyzer:
             print(f"Error getting Plex library sections: {e}")
             return None
     
+    def debug_request(self, name: str, url: str, params: dict, response: requests.Response) -> None:
+        """Debug a request by printing details about it."""
+        if self.debug:
+            print(f"\n==== DEBUG: {name} ====")
+            print(f"URL: {url}")
+            print(f"Params: {json.dumps(params, indent=2)}")
+            print(f"Status Code: {response.status_code}")
+            try:
+                data = response.json()
+                print(f"Response: {json.dumps(data, indent=2)}")
+            except:
+                print(f"Response (text): {response.text[:500]}...")
+            print("==== END DEBUG ====\n")
+    
     def get_tautulli_library_sections(self) -> List[Dict[str, Any]]:
         """
         Get all library sections from Tautulli.
@@ -122,6 +140,9 @@ class SonarrTautulliAnalyzer:
             
             response = requests.get(url, params=params)
             response.raise_for_status()
+            
+            self.debug_request("Get Tautulli Libraries", url, params, response)
+            
             data = response.json()
             
             if data.get('response', {}).get('result') != 'success':
@@ -150,12 +171,21 @@ class SonarrTautulliAnalyzer:
             # First, get all library sections from Tautulli
             library_sections = self.get_tautulli_library_sections()
             
-            # Find the TV Shows library section
+            # Find the TV Shows library section using the name from config
             tv_section = None
             for section in library_sections:
-                if section.get('section_type') == 'show':
+                if section.get('section_type') == 'show' and section.get('section_name') == self.tautulli_library_name:
                     tv_section = section
                     break
+                    
+            # If we didn't find a section with the configured name, fall back to the first show section
+            if not tv_section:
+                if self.verbose or self.debug:
+                    print(f"Warning: Could not find library named '{self.tautulli_library_name}', falling back to first show library")
+                for section in library_sections:
+                    if section.get('section_type') == 'show':
+                        tv_section = section
+                        break
             
             if not tv_section:
                 print("Error: Could not find TV Shows library section in Tautulli.")
@@ -180,6 +210,10 @@ class SonarrTautulliAnalyzer:
             
             history_response = requests.get(history_url, params=params)
             history_response.raise_for_status()
+            
+            self.debug_request(f"Get Tautulli History (after {datetime.datetime.fromtimestamp(unix_timestamp)})", 
+                              history_url, params, history_response)
+            
             history_data = history_response.json()
             
             if history_data.get('response', {}).get('result') != 'success':
@@ -188,16 +222,31 @@ class SonarrTautulliAnalyzer:
             
             # Get all watched shows in the past X months
             watched_shows = set()
+            watch_counts = {}
+            
             for item in history_data.get('response', {}).get('data', {}).get('data', []):
                 # Get the grandparent title (show name)
                 show_title = item.get('grandparent_title')
                 if show_title:
-                    watched_shows.add(show_title.lower())
+                    show_title_lower = show_title.lower()
+                    watched_shows.add(show_title_lower)
+                    watch_counts[show_title_lower] = watch_counts.get(show_title_lower, 0) + 1
             
-            if self.verbose:
+            if self.verbose or self.debug:
                 print(f"Found {len(watched_shows)} shows watched in the past {months} months")
-                if self.verbose and len(watched_shows) > 0:
-                    print(f"Sample of watched shows: {list(watched_shows)[:5]}")
+                if len(watched_shows) > 0:
+                    # Sort by watch count
+                    sorted_shows = sorted(watch_counts.items(), key=lambda x: x[1], reverse=True)
+                    print(f"Top 10 most watched shows:")
+                    for show, count in sorted_shows[:10]:
+                        print(f"  - '{show}': {count} plays")
+                    
+                    if self.debug:
+                        print("\nAll watched shows:")
+                        for show in sorted(watched_shows):
+                            print(f"  - '{show}'")
+                            
+                    print("\n")
             
             # Check if our series is in the watched shows
             series_title_lower = series_title.lower()
@@ -403,13 +452,14 @@ class SonarrTautulliAnalyzer:
 def main():
     parser = argparse.ArgumentParser(description='Analyze Sonarr library and check Tautulli watch history.')
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
-    parser.add_argument('-l', '--limit', type=int, default=100, help='Limit to top N series by size')
+    parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N series by size')
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output for debugging')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
+    parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode with detailed API responses')
     
     args = parser.parse_args()
     
-    analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose)
+    analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose, debug=args.debug)
     analyzer.generate_report(args.limit, args.months)
 
 
