@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Sonarr Tautulli Analyzer
+Servarr Tautulli Analyzer
 
-This script analyzes your Sonarr library, checks Tautulli watch history,
-and generates a report of shows that haven't been watched in the past two months.
+This script analyzes your Sonarr/Radarr library, checks Tautulli watch history,
+and generates a report of shows/movies that haven't been watched in the past two months.
 """
 
 import os
@@ -20,13 +20,25 @@ from typing import Dict, List, Any, Optional, Tuple
 from configparser import ConfigParser
 from difflib import SequenceMatcher
 
-class SonarrTautulliAnalyzer:
-    def __init__(self, config_file: str, verbose: bool = False, debug: bool = False):
-        """Initialize the analyzer with configuration from the config file."""
+class ServarrTautulliAnalyzer:
+    def __init__(self, config_file: str, mode: str = 'sonarr', verbose: bool = False, debug: bool = False):
+        """Initialize the analyzer with configuration from the config file.
+        
+        Args:
+            config_file: Path to the config file
+            mode: 'sonarr' or 'radarr'
+            verbose: Enable verbose output
+            debug: Enable debug output with API responses
+        """
         self.config = ConfigParser()
         self.verbose = verbose
         self.debug = debug
         self.session = None  # Will be initialized in async context
+        self.mode = mode.lower()
+        
+        if self.mode not in ['sonarr', 'radarr']:
+            print(f"Error: Invalid mode '{mode}'. Must be 'sonarr' or 'radarr'.")
+            sys.exit(1)
         
         if not os.path.exists(config_file):
             print(f"Error: Config file {config_file} not found.")
@@ -34,15 +46,23 @@ class SonarrTautulliAnalyzer:
             
         self.config.read(config_file)
         
-        # Sonarr configuration
-        self.sonarr_url = self.config.get('sonarr', 'url')
-        self.sonarr_api_key = self.config.get('sonarr', 'api_key')
-        self.show_count = int(self.config.get('sonarr', 'show_count', fallback=100))
+        # Sonarr/Radarr configuration
+        if self.mode == 'sonarr':
+            self.servarr_url = self.config.get('sonarr', 'url')
+            self.servarr_api_key = self.config.get('sonarr', 'api_key')
+            self.item_count = int(self.config.get('sonarr', 'show_count', fallback=100))
+            self.item_type = 'series'
+            self.tautulli_library_name = self.config.get('tautulli', 'tv_library_name', fallback='TV Shows')
+        else:  # radarr
+            self.servarr_url = self.config.get('radarr', 'url')
+            self.servarr_api_key = self.config.get('radarr', 'api_key')
+            self.item_count = int(self.config.get('radarr', 'movie_count', fallback=100))
+            self.item_type = 'movie'
+            self.tautulli_library_name = self.config.get('tautulli', 'movie_library_name', fallback='Films')
         
         # Tautulli configuration
         self.tautulli_url = self.config.get('tautulli', 'url')
         self.tautulli_api_key = self.config.get('tautulli', 'api_key')
-        self.tautulli_library_name = self.config.get('tautulli', 'library_name', fallback='TV Shows')
         
         # Plex configuration (still needed for some operations)
         self.plex_url = self.config.get('plex', 'url')
