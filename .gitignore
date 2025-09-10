@@ -1,0 +1,26 @@
+# Configuration files
+config.ini
+.config.ini
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Report outputs
+reports/
+*.json
+*.html
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
