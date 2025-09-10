@@ -74,11 +74,12 @@ class ServarrTautulliAnalyzer:
         # Create report directory if it doesn't exist
         os.makedirs(self.report_path, exist_ok=True)
         
-    async def get_sonarr_series(self) -> List[Dict[str, Any]]:
-        """Get all series from Sonarr."""
+    async def get_items(self) -> List[Dict[str, Any]]:
+        """Get all series/movies from Sonarr/Radarr."""
         await self.setup_session()
-        url = f"{self.sonarr_url}/api/v3/series"
-        headers = {"X-Api-Key": self.sonarr_api_key}
+        endpoint = "series" if self.mode == "sonarr" else "movie"
+        url = f"{self.servarr_url}/api/v3/{endpoint}"
+        headers = {"X-Api-Key": self.servarr_api_key}
         
         try:
             async with self.session.get(url, headers=headers) as response:
@@ -86,14 +87,15 @@ class ServarrTautulliAnalyzer:
                 data = await response.json()
                 return data
         except aiohttp.ClientError as e:
-            print(f"Error connecting to Sonarr: {e}")
+            print(f"Error connecting to {self.mode.capitalize()}: {e}")
             sys.exit(1)
     
-    async def delete_series(self, series_id: int, delete_files: bool = False) -> bool:
-        """Delete a series from Sonarr."""
+    async def delete_item(self, item_id: int, delete_files: bool = False) -> bool:
+        """Delete a series/movie from Sonarr/Radarr."""
         await self.setup_session()
-        url = f"{self.sonarr_url}/api/v3/series/{series_id}"
-        headers = {"X-Api-Key": self.sonarr_api_key}
+        endpoint = "series" if self.mode == "sonarr" else "movie"
+        url = f"{self.servarr_url}/api/v3/{endpoint}/{item_id}"
+        headers = {"X-Api-Key": self.servarr_api_key}
         params = {"deleteFiles": str(delete_files).lower()}
         
         try:
@@ -101,47 +103,54 @@ class ServarrTautulliAnalyzer:
                 if response.status == 200:
                     return True
                 else:
-                    print(f"Error deleting series: HTTP {response.status}")
+                    print(f"Error deleting {self.item_type}: HTTP {response.status}")
                     return False
         except aiohttp.ClientError as e:
-            print(f"Error deleting series: {e}")
+            print(f"Error deleting {self.item_type}: {e}")
             return False
     
-    async def get_series_size(self, series_id: int) -> int:
-        """Get the disk size of a series in bytes."""
+    async def get_item_size(self, item_id: int) -> int:
+        """Get the disk size of a series/movie in bytes."""
         await self.setup_session()
-        url = f"{self.sonarr_url}/api/v3/series/{series_id}"
-        headers = {"X-Api-Key": self.sonarr_api_key}
+        endpoint = "series" if self.mode == "sonarr" else "movie"
+        url = f"{self.servarr_url}/api/v3/{endpoint}/{item_id}"
+        headers = {"X-Api-Key": self.servarr_api_key}
         
         try:
             async with self.session.get(url, headers=headers) as response:
                 response.raise_for_status()
-                series_data = await response.json()
-                return series_data.get('statistics', {}).get('sizeOnDisk', 0)
+                item_data = await response.json()
+                if self.mode == "sonarr":
+                    return item_data.get('statistics', {}).get('sizeOnDisk', 0)
+                else:  # radarr
+                    return item_data.get('sizeOnDisk', 0)
         except aiohttp.ClientError as e:
-            print(f"Error getting series size: {e}")
+            print(f"Error getting {self.item_type} size: {e}")
             return 0
     
-    async def get_top_series_by_size(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get the top series by disk size."""
-        series = await self.get_sonarr_series()
+    async def get_top_items_by_size(self, limit: int = None) -> List[Dict[str, Any]]:
+        """Get the top series/movies by disk size."""
+        if limit is None:
+            limit = self.item_count
+            
+        items = await self.get_items()
         
-        # Add size information to each series in parallel
+        # Add size information to each item in parallel
         size_tasks = []
-        for s in series:
-            size_tasks.append(self.get_series_size(s['id']))
+        for item in items:
+            size_tasks.append(self.get_item_size(item['id']))
         
         # Wait for all size tasks to complete
         sizes = await asyncio.gather(*size_tasks)
         
-        # Add sizes to series data
-        for i, s in enumerate(series):
-            s['sizeOnDisk'] = sizes[i]
+        # Add sizes to item data
+        for i, item in enumerate(items):
+            item['sizeOnDisk'] = sizes[i]
         
         # Sort by size (descending) and take the top 'limit' items
-        top_series = sorted(series, key=lambda x: x.get('sizeOnDisk', 0), reverse=True)[:limit]
+        top_items = sorted(items, key=lambda x: x.get('sizeOnDisk', 0), reverse=True)[:limit]
         
-        return top_series
+        return top_items
     
     def get_plex_library_section_id(self, library_name: str) -> Optional[int]:
         """Get the Plex library section ID for the given library name."""
