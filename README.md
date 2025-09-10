@@ -39,6 +39,7 @@ Copy the `config.sample.ini` to `config.ini` and update it with your settings:
 [sonarr]
 url = http://localhost:8989
 api_key = YOUR_SONARR_API_KEY
+show_count = 100  # Number of shows to check, sorted by size
 
 [tautulli]
 url = http://localhost:8181

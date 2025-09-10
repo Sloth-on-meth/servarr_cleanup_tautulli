@@ -17,9 +17,10 @@ from typing import Dict, List, Any, Optional
 from configparser import ConfigParser
 
 class SonarrTautulliAnalyzer:
-    def __init__(self, config_file: str):
+    def __init__(self, config_file: str, verbose: bool = False):
         """Initialize the analyzer with configuration from the config file."""
         self.config = ConfigParser()
+        self.verbose = verbose
         
         if not os.path.exists(config_file):
             print(f"Error: Config file {config_file} not found.")
@@ -30,6 +31,7 @@ class SonarrTautulliAnalyzer:
         # Sonarr configuration
         self.sonarr_url = self.config.get('sonarr', 'url')
         self.sonarr_api_key = self.config.get('sonarr', 'api_key')
+        self.show_count = int(self.config.get('sonarr', 'show_count', fallback=100))
         
         # Tautulli configuration
         self.tautulli_url = self.config.get('tautulli', 'url')
@@ -107,6 +109,30 @@ class SonarrTautulliAnalyzer:
             print(f"Error getting Plex library sections: {e}")
             return None
     
+    def get_tautulli_library_sections(self) -> List[Dict[str, Any]]:
+        """
+        Get all library sections from Tautulli.
+        """
+        try:
+            url = f"{self.tautulli_url}/api/v2"
+            params = {
+                "apikey": self.tautulli_api_key,
+                "cmd": "get_libraries"
+            }
+            
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('response', {}).get('result') != 'success':
+                print(f"Error getting library sections from Tautulli: {data.get('response', {}).get('message')}")
+                return []
+            
+            return data.get('response', {}).get('data', [])
+        except Exception as e:
+            print(f"Error getting library sections from Tautulli: {e}")
+            return []
+    
     def check_tautulli_watch_history(self, series_title: str, months: int = 2) -> bool:
         """
         Check if anyone has watched the series in the past specified months using Tautulli API.
@@ -117,53 +143,39 @@ class SonarrTautulliAnalyzer:
         months_ago = now - datetime.timedelta(days=30 * months)
         unix_timestamp = int(time.mktime(months_ago.timetuple()))
         
+        if self.verbose:
+            print(f"\nChecking watch history for '{series_title}' in the past {months} months...")
+        
         try:
-            # First, search for the series in Tautulli
-            search_url = f"{self.tautulli_url}/api/v2"
-            params = {
-                "apikey": self.tautulli_api_key,
-                "cmd": "get_library_media_info",
-                "section_type": "show",
-                "search": series_title,
-                "order_column": "title",
-                "order_dir": "asc",
-                "length": 100  # Limit results
-            }
+            # First, get all library sections from Tautulli
+            library_sections = self.get_tautulli_library_sections()
             
-            response = requests.get(search_url, params=params)
-            response.raise_for_status()
-            search_data = response.json()
-            
-            if search_data.get('response', {}).get('result') != 'success':
-                print(f"Error searching for '{series_title}' in Tautulli: {search_data.get('response', {}).get('message')}")
-                return False
-            
-            # Find the exact series match
-            series_data = None
-            for item in search_data.get('response', {}).get('data', {}).get('data', []):
-                if item.get('title') == series_title:
-                    series_data = item
+            # Find the TV Shows library section
+            tv_section = None
+            for section in library_sections:
+                if section.get('section_type') == 'show':
+                    tv_section = section
                     break
             
-            if not series_data:
-                print(f"Warning: Series '{series_title}' not found in Tautulli.")
+            if not tv_section:
+                print("Error: Could not find TV Shows library section in Tautulli.")
                 return False
             
-            # Get the rating key for the series
-            rating_key = series_data.get('rating_key')
-            if not rating_key:
-                print(f"Warning: Could not get rating key for '{series_title}'")
-                return False
+            section_id = tv_section.get('section_id')
             
-            # Get watch history for this series
+            if self.verbose:
+                print(f"Found TV Shows library section: {tv_section.get('section_name')} (ID: {section_id})")
+            
+            # Get watch history for the past X months for this library section
             history_url = f"{self.tautulli_url}/api/v2"
             params = {
                 "apikey": self.tautulli_api_key,
                 "cmd": "get_history",
-                "grandparent_rating_key": rating_key,  # For TV shows
-                "length": 1000,  # Get a good amount of history
+                "section_id": section_id,
+                "length": 10000,  # Get a large amount of history
                 "order_column": "date",
-                "order_dir": "desc"  # Most recent first
+                "order_dir": "desc",  # Most recent first
+                "after": unix_timestamp  # Only get history after our cutoff date
             }
             
             history_response = requests.get(history_url, params=params)
@@ -171,15 +183,51 @@ class SonarrTautulliAnalyzer:
             history_data = history_response.json()
             
             if history_data.get('response', {}).get('result') != 'success':
-                print(f"Error getting history for '{series_title}' in Tautulli: {history_data.get('response', {}).get('message')}")
+                print(f"Error getting history from Tautulli: {history_data.get('response', {}).get('message')}")
                 return False
             
-            # Check if any item was watched after the cutoff date
+            # Get all watched shows in the past X months
+            watched_shows = set()
             for item in history_data.get('response', {}).get('data', {}).get('data', []):
-                date_watched = int(item.get('date', 0))
-                if date_watched >= unix_timestamp:
+                # Get the grandparent title (show name)
+                show_title = item.get('grandparent_title')
+                if show_title:
+                    watched_shows.add(show_title.lower())
+            
+            if self.verbose:
+                print(f"Found {len(watched_shows)} shows watched in the past {months} months")
+                if self.verbose and len(watched_shows) > 0:
+                    print(f"Sample of watched shows: {list(watched_shows)[:5]}")
+            
+            # Check if our series is in the watched shows
+            series_title_lower = series_title.lower()
+            
+            # Direct match
+            if series_title_lower in watched_shows:
+                if self.verbose:
+                    print(f"'{series_title}' was watched recently (exact match)")
+                return True
+            
+            # Check for partial matches
+            for watched_show in watched_shows:
+                # Check if the series title is contained in the watched show title
+                if series_title_lower in watched_show:
+                    if self.verbose:
+                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                    return True
+                # Check if the watched show title is contained in the series title
+                elif watched_show in series_title_lower:
+                    if self.verbose:
+                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                    return True
+                # Special case for Supernatural
+                elif series_title == "Supernatural" and "supernatural" in watched_show:
+                    if self.verbose:
+                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
                     return True
             
+            if self.verbose:
+                print(f"No recent watches found for '{series_title}'")
             return False
         except requests.exceptions.RequestException as e:
             print(f"Error checking Tautulli watch history for '{series_title}': {e}")
@@ -190,8 +238,12 @@ class SonarrTautulliAnalyzer:
             # to be safe (so it shows up in the report)
             return False
     
-    def generate_report(self, limit: int = 100, months: int = 2) -> None:
+    def generate_report(self, limit: int = None, months: int = 2) -> None:
         """Generate a report of unwatched series."""
+        # Use class instance show_count if limit is not provided
+        if limit is None:
+            limit = self.show_count
+            
         print(f"Generating report of top {limit} series by size that haven't been watched in {months} months...")
         
         # Get top series by size
@@ -353,10 +405,11 @@ def main():
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
     parser.add_argument('-l', '--limit', type=int, default=100, help='Limit to top N series by size')
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output for debugging')
     
     args = parser.parse_args()
     
-    analyzer = SonarrTautulliAnalyzer(args.config)
+    analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose)
     analyzer.generate_report(args.limit, args.months)
 
 
