@@ -87,13 +87,36 @@ python sonarr_plex_analyzer.py
 ### Command-line options
 
 - `-c, --config`: Path to config file (default: `config.ini`)
-- `-l, --limit`: Limit to top N series by size (default: 100)
+- `-l, --limit`: Limit to top N series by size (default: from config)
 - `-m, --months`: Check if watched in the past N months (default: 2)
+- `-v, --verbose`: Enable verbose output
+- `-d, --debug`: Enable debug mode with detailed API responses
+- `-t, --tui`: Enable terminal UI with interactive deletion
+- `--delete-files`: Delete files when removing series (only with --tui)
 
-Example:
+Examples:
 ```
+# Generate a report of top 50 unwatched series in the past 3 months
 python sonarr_plex_analyzer.py --limit 50 --months 3
+
+# Interactive terminal UI to delete unwatched series (keeping files)
+python sonarr_plex_analyzer.py --tui
+
+# Interactive terminal UI to delete unwatched series AND their files
+python sonarr_plex_analyzer.py --tui --delete-files
 ```
+
+### Interactive Terminal UI
+
+When using the `--tui` option, the script will:
+
+1. Find all unwatched series based on your criteria
+2. Show each series one by one with its size and path
+3. Ask if you want to delete it (y/n)
+4. If you answer yes, it will delete the series from Sonarr
+5. If `--delete-files` is specified, it will also delete the files from disk
+
+This is a convenient way to clean up your library interactively.
 
 ## Output
 
