@@ -44,6 +44,7 @@ show_count = 100  # Number of shows to check, sorted by size
 [tautulli]
 url = http://localhost:8181
 api_key = YOUR_TAUTULLI_API_KEY
+library_name = TV Shows  # Name of your TV Shows library in Tautulli
 
 [plex]
 url = http://localhost:32400
