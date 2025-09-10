@@ -1,18 +1,21 @@
-# Sonarr Tautulli Analyzer
+# Servarr Tautulli Analyzer
 
-This script analyzes your Sonarr library, checks Tautulli watch history, and generates a report of shows that haven't been watched in the past two months.
+A script to analyze your Sonarr/Radarr library, check Tautulli watch history, and generate a report of shows/movies that haven't been watched in the past two months.
 
 ## Features
 
-- Gets the top 100 series from Sonarr by disk size
-- Checks if anyone has watched these series in Tautulli within a specified time period
-- Generates both JSON and HTML reports of unwatched series
-- Shows how much disk space could be freed by removing unwatched series
+- Gets the top series from Sonarr by disk size
+- Gets the top movies from Radarr by disk size
+- Checks if anyone has watched these series/movies in Tautulli within a specified time period
+- Generates both JSON and HTML reports of unwatched content
+- Shows how much disk space could be freed by removing unwatched content
+- Interactive terminal UI for deleting unwatched content
+- Asynchronous operation for faster processing
 
-## Requirements
+## Requirements.
 
 - Python 3.6+
-- Sonarr with API access
+- Sonarr and/or Radarr with API access
 - Tautulli with API access
 - Plex Media Server
 
@@ -41,10 +44,16 @@ url = http://localhost:8989
 api_key = YOUR_SONARR_API_KEY
 show_count = 100  # Number of shows to check, sorted by size
 
+[radarr]
+url = http://localhost:7878
+api_key = YOUR_RADARR_API_KEY
+movie_count = 100  # Number of movies to check, sorted by size
+
 [tautulli]
 url = http://localhost:8181
 api_key = YOUR_TAUTULLI_API_KEY
-library_name = TV Shows  # Name of your TV Shows library in Tautulli
+tv_library_name = TV Shows  # Name of your TV Shows library in Tautulli
+movie_library_name = Films  # Name of your Movies library in Tautulli
 
 [plex]
 url = http://localhost:32400
@@ -87,33 +96,37 @@ python sonarr_plex_analyzer.py
 ### Command-line options
 
 - `-c, --config`: Path to config file (default: `config.ini`)
-- `-l, --limit`: Limit to top N series by size (default: from config)
+- `-l, --limit`: Limit to top N items by size (default: from config)
 - `-m, --months`: Check if watched in the past N months (default: 2)
 - `-v, --verbose`: Enable verbose output
 - `-d, --debug`: Enable debug mode with detailed API responses
 - `-t, --tui`: Enable terminal UI with interactive deletion
-- `--delete-files`: Delete files when removing series (only with --tui)
+- `--delete-files`: Delete files when removing items (only with --tui)
+- `--mode`: Select mode: `sonarr` for TV shows, `radarr` for movies (default: sonarr)
 
 Examples:
 ```
-# Generate a report of top 50 unwatched series in the past 3 months
-python sonarr_plex_analyzer.py --limit 50 --months 3
+# Generate a report of top 50 unwatched TV shows in the past 3 months
+python sonarr_plex_analyzer.py --limit 50 --months 3 --mode sonarr
 
-# Interactive terminal UI to delete unwatched series (keeping files)
-python sonarr_plex_analyzer.py --tui
+# Generate a report of unwatched movies in the past 6 months
+python sonarr_plex_analyzer.py --months 6 --mode radarr
 
-# Interactive terminal UI to delete unwatched series AND their files
-python sonarr_plex_analyzer.py --tui --delete-files
+# Interactive terminal UI to delete unwatched TV shows (keeping files)
+python sonarr_plex_analyzer.py --tui --mode sonarr
+
+# Interactive terminal UI to delete unwatched movies AND their files
+python sonarr_plex_analyzer.py --tui --delete-files --mode radarr
 ```
 
 ### Interactive Terminal UI
 
 When using the `--tui` option, the script will:
 
-1. Find all unwatched series based on your criteria
-2. Show each series one by one with its size and path
+1. Find all unwatched series/movies based on your criteria
+2. Show each item one by one with its size and path
 3. Ask if you want to delete it (y/n)
-4. If you answer yes, it will delete the series from Sonarr
+4. If you answer yes, it will delete the item from Sonarr/Radarr
 5. If `--delete-files` is specified, it will also delete the files from disk
 
 This is a convenient way to clean up your library interactively.

@@ -225,9 +225,9 @@ class ServarrTautulliAnalyzer:
             print(f"Error getting library sections from Tautulli: {e}")
             return []
     
-    async def check_tautulli_watch_history(self, series_title: str, months: int = 2) -> bool:
+    async def check_tautulli_watch_history(self, item_title: str, months: int = 2) -> bool:
         """
-        Check if anyone has watched the series in the past specified months using Tautulli API.
+        Check if anyone has watched the series/movie in the past specified months using Tautulli API.
         Returns True if watched, False if not watched.
         """
         # Calculate the timestamp for X months ago
@@ -236,36 +236,39 @@ class ServarrTautulliAnalyzer:
         unix_timestamp = int(time.mktime(months_ago.timetuple()))
         
         if self.verbose:
-            print(f"\nChecking watch history for '{series_title}' in the past {months} months...")
+            print(f"\nChecking watch history for '{item_title}' in the past {months} months...")
         
         try:
             # First, get all library sections from Tautulli
             library_sections = await self.get_tautulli_library_sections()
             
-            # Find the TV Shows library section using the name from config
-            tv_section = None
+            # Determine the section type based on mode
+            section_type = 'show' if self.mode == 'sonarr' else 'movie'
+            
+            # Find the appropriate library section using the name from config
+            target_section = None
             for section in library_sections:
-                if section.get('section_type') == 'show' and section.get('section_name') == self.tautulli_library_name:
-                    tv_section = section
+                if section.get('section_type') == section_type and section.get('section_name') == self.tautulli_library_name:
+                    target_section = section
                     break
                     
-            # If we didn't find a section with the configured name, fall back to the first show section
-            if not tv_section:
+            # If we didn't find a section with the configured name, fall back to the first section of the right type
+            if not target_section:
                 if self.verbose or self.debug:
-                    print(f"Warning: Could not find library named '{self.tautulli_library_name}', falling back to first show library")
+                    print(f"Warning: Could not find library named '{self.tautulli_library_name}', falling back to first {section_type} library")
                 for section in library_sections:
-                    if section.get('section_type') == 'show':
-                        tv_section = section
+                    if section.get('section_type') == section_type:
+                        target_section = section
                         break
             
-            if not tv_section:
-                print("Error: Could not find TV Shows library section in Tautulli.")
+            if not target_section:
+                print(f"Error: Could not find {section_type.capitalize()} library section in Tautulli.")
                 return False
             
-            section_id = tv_section.get('section_id')
+            section_id = target_section.get('section_id')
             
             if self.verbose:
-                print(f"Found TV Shows library section: {tv_section.get('section_name')} (ID: {section_id})")
+                print(f"Found {section_type.capitalize()} library section: {target_section.get('section_name')} (ID: {section_id})")
             
             # Get watch history for the past X months for this library section
             await self.setup_session()
@@ -291,118 +294,128 @@ class ServarrTautulliAnalyzer:
                     print(f"Error getting history from Tautulli: {history_data.get('response', {}).get('message')}")
                     return False
                 
-                # Get all watched shows in the past X months
-                watched_shows = set()
+                # Get all watched items in the past X months
+                watched_items = set()
                 watch_counts = {}
                 
                 for item in history_data.get('response', {}).get('data', {}).get('data', []):
-                    # Get the grandparent title (show name)
-                    show_title = item.get('grandparent_title')
-                    if show_title:
-                        show_title_lower = show_title.lower()
-                        watched_shows.add(show_title_lower)
-                        watch_counts[show_title_lower] = watch_counts.get(show_title_lower, 0) + 1
+                    # For TV shows, use grandparent_title (show name)
+                    # For movies, use title
+                    if self.mode == 'sonarr':
+                        item_name = item.get('grandparent_title')
+                    else:  # radarr
+                        item_name = item.get('title')
+                        
+                    if item_name:
+                        item_name_lower = item_name.lower()
+                        watched_items.add(item_name_lower)
+                        watch_counts[item_name_lower] = watch_counts.get(item_name_lower, 0) + 1
                 
                 if self.verbose or self.debug:
-                    print(f"Found {len(watched_shows)} shows watched in the past {months} months")
-                    if len(watched_shows) > 0:
+                    item_type_plural = "shows" if self.mode == "sonarr" else "movies"
+                    print(f"Found {len(watched_items)} {item_type_plural} watched in the past {months} months")
+                    if len(watched_items) > 0:
                         # Sort by watch count
-                        sorted_shows = sorted(watch_counts.items(), key=lambda x: x[1], reverse=True)
-                        print(f"Top 10 most watched shows:")
-                        for show, count in sorted_shows[:10]:
-                            print(f"  - '{show}': {count} plays")
+                        sorted_items = sorted(watch_counts.items(), key=lambda x: x[1], reverse=True)
+                        print(f"Top 10 most watched {item_type_plural}:")
+                        for item_name, count in sorted_items[:10]:
+                            print(f"  - '{item_name}': {count} plays")
                         
                         if self.debug:
-                            print("\nAll watched shows:")
-                            for show in sorted(watched_shows):
-                                print(f"  - '{show}'")
+                            print(f"\nAll watched {item_type_plural}:")
+                            for item_name in sorted(watched_items):
+                                print(f"  - '{item_name}'")
                                 
                         print("\n")
                 
-                # Check if our series is in the watched shows
-                series_title_lower = series_title.lower()
+                # Check if our item is in the watched items
+                item_title_lower = item_title.lower()
                 
                 # Direct match
-                if series_title_lower in watched_shows:
+                if item_title_lower in watched_items:
                     if self.verbose:
-                        print(f"'{series_title}' was watched recently (exact match)")
+                        print(f"'{item_title}' was watched recently (exact match)")
                     return True
                 
                 # Check for partial matches
-                for watched_show in watched_shows:
-                    # Check if the series title is contained in the watched show title
-                    if series_title_lower in watched_show:
+                for watched_item in watched_items:
+                    # Check if the item title is contained in the watched item title
+                    if item_title_lower in watched_item:
                         if self.verbose:
-                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                            print(f"'{item_title}' was watched recently via match '{watched_item}'")
                         return True
-                    # Check if the watched show title is contained in the series title
-                    elif watched_show in series_title_lower:
+                    # Check if the watched item title is contained in the item title
+                    elif watched_item in item_title_lower:
                         if self.verbose:
-                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                            print(f"'{item_title}' was watched recently via match '{watched_item}'")
                         return True
                     # Special case for Supernatural
-                    elif series_title == "Supernatural" and "supernatural" in watched_show:
+                    elif item_title == "Supernatural" and "supernatural" in watched_item:
                         if self.verbose:
-                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                            print(f"'{item_title}' was watched recently via match '{watched_item}'")
                         return True
                 
                 if self.verbose:
-                    print(f"No recent watches found for '{series_title}'")
+                    print(f"No recent watches found for '{item_title}'")
                 return False
         except aiohttp.ClientError as e:
-            print(f"Error checking Tautulli watch history for '{series_title}': {e}")
+            print(f"Error checking Tautulli watch history for '{item_title}': {e}")
             return False
         except Exception as e:
-            print(f"Error processing '{series_title}' in Tautulli: {e}")
-            # If there's an error processing this show, we'll assume it's not watched
+            print(f"Error processing '{item_title}' in Tautulli: {e}")
+            # If there's an error processing this item, we'll assume it's not watched
             # to be safe (so it shows up in the report)
             return False
     
-    async def get_unwatched_series(self, limit: int = None, months: int = 2) -> List[Dict[str, Any]]:
-        """Get a list of unwatched series."""
-        # Use class instance show_count if limit is not provided
+    async def get_unwatched_items(self, limit: int = None, months: int = 2) -> List[Dict[str, Any]]:
+        """Get a list of unwatched series/movies."""
+        # Use class instance item_count if limit is not provided
         if limit is None:
-            limit = self.show_count
+            limit = self.item_count
             
-        print(f"Finding top {limit} series by size that haven't been watched in {months} months...")
+        item_type_plural = "series" if self.mode == "sonarr" else "movies"
+        print(f"Finding top {limit} {item_type_plural} by size that haven't been watched in {months} months...")
         
-        # Get top series by size
-        top_series = await self.get_top_series_by_size(limit)
+        # Get top items by size
+        top_items = await self.get_top_items_by_size(limit)
         
-        # Check watch history for each series in parallel
+        # Check watch history for each item in parallel
         watch_tasks = []
-        for series in top_series:
-            watch_tasks.append(self.check_tautulli_watch_history(series['title'], months))
+        for item in top_items:
+            watch_tasks.append(self.check_tautulli_watch_history(item['title'], months))
         
         # Wait for all watch history checks to complete
         watch_results = await asyncio.gather(*watch_tasks)
         
         # Process results
-        unwatched_series = []
-        for idx, (series, watched) in enumerate(zip(top_series, watch_results)):
-            print(f"Checking {idx+1}/{len(top_series)}: {series['title']}")
+        unwatched_items = []
+        for idx, (item, watched) in enumerate(zip(top_items, watch_results)):
+            print(f"Checking {idx+1}/{len(top_items)}: {item['title']}")
             if not watched:
-                unwatched_series.append({
-                    'id': series['id'],
-                    'title': series['title'],
-                    'size': series['sizeOnDisk'],
-                    'size_human': self.human_readable_size(series['sizeOnDisk']),
-                    'path': series.get('path', 'Unknown'),
+                unwatched_items.append({
+                    'id': item['id'],
+                    'title': item['title'],
+                    'size': item['sizeOnDisk'],
+                    'size_human': self.human_readable_size(item['sizeOnDisk']),
+                    'path': item.get('path', 'Unknown'),
                 })
                 
-        return unwatched_series
+        return unwatched_items
         
     async def interactive_cleanup(self, limit: int = None, months: int = 2, delete_files: bool = False) -> None:
-        """Interactive terminal UI for deleting unwatched series."""
-        unwatched_series = await self.get_unwatched_series(limit, months)
+        """Interactive terminal UI for deleting unwatched series/movies."""
+        unwatched_items = await self.get_unwatched_items(limit, months)
         
-        if not unwatched_series:
-            print("\nNo unwatched series found!")
+        item_type = "series" if self.mode == "sonarr" else "movies"
+        item_type_singular = "series" if self.mode == "sonarr" else "movie"
+        
+        if not unwatched_items:
+            print(f"\nNo unwatched {item_type} found!")
             return
             
-        print(f"\nFound {len(unwatched_series)} series that haven't been watched in {months} months.")
-        print(f"Total space that could be freed: {self.human_readable_size(sum(s['size'] for s in unwatched_series))}")
-        print("\nInteractive deletion mode. For each series, you'll be asked if you want to delete it.")
+        print(f"\nFound {len(unwatched_items)} {item_type} that haven't been watched in {months} months.")
+        print(f"Total space that could be freed: {self.human_readable_size(sum(item['size'] for item in unwatched_items))}")
+        print(f"\nInteractive deletion mode. For each {item_type_singular}, you'll be asked if you want to delete it.")
         print(f"Delete files option is {'ENABLED' if delete_files else 'DISABLED'}")
         print("\nPress Enter to continue or Ctrl+C to abort...")
         input()
@@ -410,153 +423,114 @@ class ServarrTautulliAnalyzer:
         deleted_count = 0
         freed_space = 0
         
-        for idx, series in enumerate(unwatched_series):
-            print(f"\n[{idx+1}/{len(unwatched_series)}] {series['title']}")
-            print(f"Size: {series['size_human']}")
-            print(f"Path: {series['path']}")
+        for idx, item in enumerate(unwatched_items):
+            print(f"\n[{idx+1}/{len(unwatched_items)}] {item['title']}")
+            print(f"Size: {item['size_human']}")
+            print(f"Path: {item['path']}")
             
             while True:
-                response = input(f"Delete this series? [y/n]: ").lower()
+                response = input(f"Delete this {item_type_singular}? [y/n]: ").lower()
                 if response in ['y', 'yes']:
-                    print(f"Deleting {series['title']}...")
-                    success = await self.delete_series(series['id'], delete_files)
+                    print(f"Deleting {item['title']}...")
+                    success = await self.delete_item(item['id'], delete_files)
                     if success:
-                        print(f"Successfully deleted {series['title']}")
+                        print(f"Successfully deleted {item['title']}")
                         deleted_count += 1
-                        freed_space += series['size']
+                        freed_space += item['size']
                     else:
-                        print(f"Failed to delete {series['title']}")
+                        print(f"Failed to delete {item['title']}")
                     break
                 elif response in ['n', 'no']:
-                    print(f"Skipping {series['title']}")
+                    print(f"Skipping {item['title']}")
                     break
                 else:
                     print("Please enter 'y' or 'n'")
         
-        print(f"\nDeletion complete. Deleted {deleted_count} series.")
+        print(f"\nDeletion complete. Deleted {deleted_count} {item_type}.")
         print(f"Freed space: {self.human_readable_size(freed_space)}")
     
     async def generate_report(self, limit: int = None, months: int = 2) -> None:
-        """Generate a report of unwatched series."""
-        unwatched_series = await self.get_unwatched_series(limit, months)
+        """Generate a report of unwatched series/movies."""
+        unwatched_items = await self.get_unwatched_items(limit, months)
+        
+        item_type = "series" if self.mode == "sonarr" else "movies"
         
         # Generate report
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        report_file = os.path.join(self.report_path, f"unwatched_report_{timestamp}.json")
+        report_file = os.path.join(self.report_path, f"unwatched_{self.mode}_{timestamp}.json")
         
         with open(report_file, 'w') as f:
             json.dump({
                 'report_date': datetime.datetime.now().isoformat(),
-                'unwatched_series_count': len(unwatched_series),
+                'mode': self.mode,
+                'unwatched_count': len(unwatched_items),
                 'months_threshold': months,
-                'unwatched_series': unwatched_series
+                'unwatched_items': unwatched_items
             }, f, indent=2)
         
         # Generate HTML report
-        html_report_file = os.path.join(self.report_path, f"unwatched_report_{timestamp}.html")
-        self.generate_html_report(unwatched_series, html_report_file, months)
+        html_report_file = os.path.join(self.report_path, f"unwatched_{self.mode}_{timestamp}.html")
+        self.generate_html_report(unwatched_items, html_report_file, months)
         
         print(f"\nReport generated:")
         print(f"- JSON: {report_file}")
         print(f"- HTML: {html_report_file}")
-        print(f"\nFound {len(unwatched_series)} series that haven't been watched in {months} months.")
         
-        # Print total space that could be freed
-        total_size = sum(series['size'] for series in unwatched_series)
-        print(f"Total space that could be freed: {self.human_readable_size(total_size)}")
+        print(f"\nFound {len(unwatched_items)} {item_type} that haven't been watched in {months} months.")
+        print(f"Total space that could be freed: {self.human_readable_size(sum(item['size'] for item in unwatched_items))}")
     
-    def generate_html_report(self, unwatched_series: List[Dict], file_path: str, months: int) -> None:
-        """Generate an HTML report of unwatched series."""
-        total_size = sum(series['size'] for series in unwatched_series)
+    def generate_html_report(self, unwatched_items: List[Dict], file_path: str, months: int) -> None:
+        """Generate an HTML report of unwatched series/movies."""
+        total_size = sum(item['size'] for item in unwatched_items)
+        
+        item_type = "Series" if self.mode == "sonarr" else "Movies"
         
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Unwatched Sonarr Series Report</title>
+    <title>Unwatched {item_type} Report</title>
     <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-        }}
-        h1, h2 {{
-            color: #2c3e50;
-        }}
-        .summary {{
-            background-color: #f8f9fa;
-            border-left: 4px solid #4CAF50;
-            padding: 15px;
-            margin-bottom: 20px;
-        }}
-        table {{
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 20px;
-        }}
-        th, td {{
-            border: 1px solid #ddd;
-            padding: 12px;
-            text-align: left;
-        }}
-        th {{
-            background-color: #4CAF50;
-            color: white;
-        }}
-        tr:nth-child(even) {{
-            background-color: #f2f2f2;
-        }}
-        tr:hover {{
-            background-color: #ddd;
-        }}
-        .timestamp {{
-            color: #777;
-            font-style: italic;
-        }}
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        h1 {{ color: #333; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+        tr:nth-child(even) {{ background-color: #f9f9f9; }}
+        tr:hover {{ background-color: #f5f5f5; }}
+        .summary {{ margin-bottom: 20px; }}
     </style>
 </head>
 <body>
-    <h1>Unwatched Sonarr Series Report</h1>
-    <p class="timestamp">Generated on {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-    
+    <h1>Unwatched {item_type} Report</h1>
     <div class="summary">
-        <h2>Summary</h2>
-        <p>Found <strong>{len(unwatched_series)}</strong> series that haven't been watched in the past {months} months.</p>
+        <p>Report generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+        <p>Found <strong>{len(unwatched_items)}</strong> {item_type.lower()} that haven't been watched in <strong>{months}</strong> months.</p>
         <p>Total space that could be freed: <strong>{self.human_readable_size(total_size)}</strong></p>
     </div>
-    
-    <h2>Unwatched Series</h2>
     <table>
-        <thead>
-            <tr>
-                <th>#</th>
-                <th>Series Title</th>
-                <th>Size</th>
-                <th>Path</th>
-            </tr>
-        </thead>
-        <tbody>
-"""
+        <tr>
+            <th>Title</th>
+            <th>Size</th>
+            <th>Path</th>
+        </tr>"""
         
-        # Add rows for each unwatched series
-        for idx, series in enumerate(sorted(unwatched_series, key=lambda x: x['size'], reverse=True)):
+        # Sort by size (descending)
+        sorted_items = sorted(unwatched_items, key=lambda x: x['size'], reverse=True)
+        
+        for item in sorted_items:
             html += f"""
-            <tr>
-                <td>{idx + 1}</td>
-                <td>{series['title']}</td>
-                <td>{series['size_human']}</td>
-                <td>{series['path']}</td>
-            </tr>"""
+        <tr>
+            <td>{item['title']}</td>
+            <td>{item['size_human']}</td>
+            <td>{item['path']}</td>
+        </tr>"""
         
         html += """
-        </tbody>
     </table>
 </body>
-</html>
-"""
+</html>"""
         
         with open(file_path, 'w') as f:
             f.write(html)
@@ -577,18 +551,19 @@ class ServarrTautulliAnalyzer:
 
 
 async def main_async():
-    parser = argparse.ArgumentParser(description='Analyze Sonarr library and check Tautulli watch history.')
+    parser = argparse.ArgumentParser(description='Analyze Sonarr/Radarr library and check Tautulli watch history.')
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
-    parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N series by size')
+    parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N items by size')
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode with detailed API responses')
     parser.add_argument('-t', '--tui', action='store_true', help='Enable terminal UI with interactive deletion')
-    parser.add_argument('--delete-files', action='store_true', help='Delete files when removing series (only with --tui)')
+    parser.add_argument('--delete-files', action='store_true', help='Delete files when removing items (only with --tui)')
+    parser.add_argument('--mode', choices=['sonarr', 'radarr'], default='sonarr', help='Select mode: sonarr for TV shows, radarr for movies')
     
     args = parser.parse_args()
     
-    analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose, debug=args.debug)
+    analyzer = ServarrTautulliAnalyzer(args.config, mode=args.mode, verbose=args.verbose, debug=args.debug)
     try:
         if args.tui:
             await analyzer.interactive_cleanup(args.limit, args.months, args.delete_files)
