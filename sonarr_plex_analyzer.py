@@ -12,6 +12,8 @@ import json
 import time
 import re
 import datetime
+import asyncio
+import aiohttp
 import requests
 import argparse
 from typing import Dict, List, Any, Optional, Tuple
@@ -24,6 +26,7 @@ class SonarrTautulliAnalyzer:
         self.config = ConfigParser()
         self.verbose = verbose
         self.debug = debug
+        self.session = None  # Will be initialized in async context
         
         if not os.path.exists(config_file):
             print(f"Error: Config file {config_file} not found.")
@@ -51,40 +54,51 @@ class SonarrTautulliAnalyzer:
         # Create report directory if it doesn't exist
         os.makedirs(self.report_path, exist_ok=True)
         
-    def get_sonarr_series(self) -> List[Dict[str, Any]]:
+    async def get_sonarr_series(self) -> List[Dict[str, Any]]:
         """Get all series from Sonarr."""
+        await self.setup_session()
         url = f"{self.sonarr_url}/api/v3/series"
         headers = {"X-Api-Key": self.sonarr_api_key}
         
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
+            async with self.session.get(url, headers=headers) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data
+        except aiohttp.ClientError as e:
             print(f"Error connecting to Sonarr: {e}")
             sys.exit(1)
     
-    def get_series_size(self, series_id: int) -> int:
+    async def get_series_size(self, series_id: int) -> int:
         """Get the disk size of a series in bytes."""
+        await self.setup_session()
         url = f"{self.sonarr_url}/api/v3/series/{series_id}"
         headers = {"X-Api-Key": self.sonarr_api_key}
         
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            series_data = response.json()
-            return series_data.get('statistics', {}).get('sizeOnDisk', 0)
-        except requests.exceptions.RequestException as e:
+            async with self.session.get(url, headers=headers) as response:
+                response.raise_for_status()
+                series_data = await response.json()
+                return series_data.get('statistics', {}).get('sizeOnDisk', 0)
+        except aiohttp.ClientError as e:
             print(f"Error getting series size: {e}")
             return 0
     
-    def get_top_series_by_size(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_top_series_by_size(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get the top series by disk size."""
-        series = self.get_sonarr_series()
+        series = await self.get_sonarr_series()
         
-        # Add size information to each series
+        # Add size information to each series in parallel
+        size_tasks = []
         for s in series:
-            s['sizeOnDisk'] = self.get_series_size(s['id'])
+            size_tasks.append(self.get_series_size(s['id']))
+        
+        # Wait for all size tasks to complete
+        sizes = await asyncio.gather(*size_tasks)
+        
+        # Add sizes to series data
+        for i, s in enumerate(series):
+            s['sizeOnDisk'] = sizes[i]
         
         # Sort by size (descending) and take the top 'limit' items
         top_series = sorted(series, key=lambda x: x.get('sizeOnDisk', 0), reverse=True)[:limit]
@@ -113,48 +127,58 @@ class SonarrTautulliAnalyzer:
             print(f"Error getting Plex library sections: {e}")
             return None
     
-    def debug_request(self, name: str, url: str, params: dict, response: requests.Response) -> None:
+    async def setup_session(self):
+        """Set up the aiohttp session."""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+    
+    async def close_session(self):
+        """Close the aiohttp session."""
+        if self.session is not None:
+            await self.session.close()
+            self.session = None
+    
+    def debug_request(self, name: str, url: str, params: dict, status_code: int, data: Any) -> None:
         """Debug a request by printing details about it."""
         if self.debug:
             print(f"\n==== DEBUG: {name} ====")
             print(f"URL: {url}")
             print(f"Params: {json.dumps(params, indent=2)}")
-            print(f"Status Code: {response.status_code}")
+            print(f"Status Code: {status_code}")
             try:
-                data = response.json()
                 print(f"Response: {json.dumps(data, indent=2)}")
             except:
-                print(f"Response (text): {response.text[:500]}...")
+                print(f"Response (text): {str(data)[:500]}...")
             print("==== END DEBUG ====\n")
     
-    def get_tautulli_library_sections(self) -> List[Dict[str, Any]]:
+    async def get_tautulli_library_sections(self) -> List[Dict[str, Any]]:
         """
         Get all library sections from Tautulli.
         """
         try:
+            await self.setup_session()
             url = f"{self.tautulli_url}/api/v2"
             params = {
                 "apikey": self.tautulli_api_key,
                 "cmd": "get_libraries"
             }
             
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            
-            self.debug_request("Get Tautulli Libraries", url, params, response)
-            
-            data = response.json()
-            
-            if data.get('response', {}).get('result') != 'success':
-                print(f"Error getting library sections from Tautulli: {data.get('response', {}).get('message')}")
-                return []
-            
-            return data.get('response', {}).get('data', [])
+            async with self.session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                self.debug_request("Get Tautulli Libraries", url, params, response.status, data)
+                
+                if data.get('response', {}).get('result') != 'success':
+                    print(f"Error getting library sections from Tautulli: {data.get('response', {}).get('message')}")
+                    return []
+                
+                return data.get('response', {}).get('data', [])
         except Exception as e:
             print(f"Error getting library sections from Tautulli: {e}")
             return []
     
-    def check_tautulli_watch_history(self, series_title: str, months: int = 2) -> bool:
+    async def check_tautulli_watch_history(self, series_title: str, months: int = 2) -> bool:
         """
         Check if anyone has watched the series in the past specified months using Tautulli API.
         Returns True if watched, False if not watched.
@@ -169,7 +193,7 @@ class SonarrTautulliAnalyzer:
         
         try:
             # First, get all library sections from Tautulli
-            library_sections = self.get_tautulli_library_sections()
+            library_sections = await self.get_tautulli_library_sections()
             
             # Find the TV Shows library section using the name from config
             tv_section = None
@@ -197,6 +221,7 @@ class SonarrTautulliAnalyzer:
                 print(f"Found TV Shows library section: {tv_section.get('section_name')} (ID: {section_id})")
             
             # Get watch history for the past X months for this library section
+            await self.setup_session()
             history_url = f"{self.tautulli_url}/api/v2"
             params = {
                 "apikey": self.tautulli_api_key,
@@ -208,77 +233,76 @@ class SonarrTautulliAnalyzer:
                 "after": unix_timestamp  # Only get history after our cutoff date
             }
             
-            history_response = requests.get(history_url, params=params)
-            history_response.raise_for_status()
-            
-            self.debug_request(f"Get Tautulli History (after {datetime.datetime.fromtimestamp(unix_timestamp)})", 
-                              history_url, params, history_response)
-            
-            history_data = history_response.json()
-            
-            if history_data.get('response', {}).get('result') != 'success':
-                print(f"Error getting history from Tautulli: {history_data.get('response', {}).get('message')}")
-                return False
-            
-            # Get all watched shows in the past X months
-            watched_shows = set()
-            watch_counts = {}
-            
-            for item in history_data.get('response', {}).get('data', {}).get('data', []):
-                # Get the grandparent title (show name)
-                show_title = item.get('grandparent_title')
-                if show_title:
-                    show_title_lower = show_title.lower()
-                    watched_shows.add(show_title_lower)
-                    watch_counts[show_title_lower] = watch_counts.get(show_title_lower, 0) + 1
-            
-            if self.verbose or self.debug:
-                print(f"Found {len(watched_shows)} shows watched in the past {months} months")
-                if len(watched_shows) > 0:
-                    # Sort by watch count
-                    sorted_shows = sorted(watch_counts.items(), key=lambda x: x[1], reverse=True)
-                    print(f"Top 10 most watched shows:")
-                    for show, count in sorted_shows[:10]:
-                        print(f"  - '{show}': {count} plays")
-                    
-                    if self.debug:
-                        print("\nAll watched shows:")
-                        for show in sorted(watched_shows):
-                            print(f"  - '{show}'")
-                            
-                    print("\n")
-            
-            # Check if our series is in the watched shows
-            series_title_lower = series_title.lower()
-            
-            # Direct match
-            if series_title_lower in watched_shows:
+            async with self.session.get(history_url, params=params) as history_response:
+                history_response.raise_for_status()
+                history_data = await history_response.json()
+                
+                self.debug_request(f"Get Tautulli History (after {datetime.datetime.fromtimestamp(unix_timestamp)})", 
+                                  history_url, params, history_response.status, history_data)
+                
+                if history_data.get('response', {}).get('result') != 'success':
+                    print(f"Error getting history from Tautulli: {history_data.get('response', {}).get('message')}")
+                    return False
+                
+                # Get all watched shows in the past X months
+                watched_shows = set()
+                watch_counts = {}
+                
+                for item in history_data.get('response', {}).get('data', {}).get('data', []):
+                    # Get the grandparent title (show name)
+                    show_title = item.get('grandparent_title')
+                    if show_title:
+                        show_title_lower = show_title.lower()
+                        watched_shows.add(show_title_lower)
+                        watch_counts[show_title_lower] = watch_counts.get(show_title_lower, 0) + 1
+                
+                if self.verbose or self.debug:
+                    print(f"Found {len(watched_shows)} shows watched in the past {months} months")
+                    if len(watched_shows) > 0:
+                        # Sort by watch count
+                        sorted_shows = sorted(watch_counts.items(), key=lambda x: x[1], reverse=True)
+                        print(f"Top 10 most watched shows:")
+                        for show, count in sorted_shows[:10]:
+                            print(f"  - '{show}': {count} plays")
+                        
+                        if self.debug:
+                            print("\nAll watched shows:")
+                            for show in sorted(watched_shows):
+                                print(f"  - '{show}'")
+                                
+                        print("\n")
+                
+                # Check if our series is in the watched shows
+                series_title_lower = series_title.lower()
+                
+                # Direct match
+                if series_title_lower in watched_shows:
+                    if self.verbose:
+                        print(f"'{series_title}' was watched recently (exact match)")
+                    return True
+                
+                # Check for partial matches
+                for watched_show in watched_shows:
+                    # Check if the series title is contained in the watched show title
+                    if series_title_lower in watched_show:
+                        if self.verbose:
+                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                        return True
+                    # Check if the watched show title is contained in the series title
+                    elif watched_show in series_title_lower:
+                        if self.verbose:
+                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                        return True
+                    # Special case for Supernatural
+                    elif series_title == "Supernatural" and "supernatural" in watched_show:
+                        if self.verbose:
+                            print(f"'{series_title}' was watched recently via match '{watched_show}'")
+                        return True
+                
                 if self.verbose:
-                    print(f"'{series_title}' was watched recently (exact match)")
-                return True
-            
-            # Check for partial matches
-            for watched_show in watched_shows:
-                # Check if the series title is contained in the watched show title
-                if series_title_lower in watched_show:
-                    if self.verbose:
-                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
-                    return True
-                # Check if the watched show title is contained in the series title
-                elif watched_show in series_title_lower:
-                    if self.verbose:
-                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
-                    return True
-                # Special case for Supernatural
-                elif series_title == "Supernatural" and "supernatural" in watched_show:
-                    if self.verbose:
-                        print(f"'{series_title}' was watched recently via match '{watched_show}'")
-                    return True
-            
-            if self.verbose:
-                print(f"No recent watches found for '{series_title}'")
-            return False
-        except requests.exceptions.RequestException as e:
+                    print(f"No recent watches found for '{series_title}'")
+                return False
+        except aiohttp.ClientError as e:
             print(f"Error checking Tautulli watch history for '{series_title}': {e}")
             return False
         except Exception as e:
@@ -287,7 +311,7 @@ class SonarrTautulliAnalyzer:
             # to be safe (so it shows up in the report)
             return False
     
-    def generate_report(self, limit: int = None, months: int = 2) -> None:
+    async def generate_report(self, limit: int = None, months: int = 2) -> None:
         """Generate a report of unwatched series."""
         # Use class instance show_count if limit is not provided
         if limit is None:
@@ -296,14 +320,20 @@ class SonarrTautulliAnalyzer:
         print(f"Generating report of top {limit} series by size that haven't been watched in {months} months...")
         
         # Get top series by size
-        top_series = self.get_top_series_by_size(limit)
+        top_series = await self.get_top_series_by_size(limit)
         
-        # Check watch history for each series
+        # Check watch history for each series in parallel
+        watch_tasks = []
+        for series in top_series:
+            watch_tasks.append(self.check_tautulli_watch_history(series['title'], months))
+        
+        # Wait for all watch history checks to complete
+        watch_results = await asyncio.gather(*watch_tasks)
+        
+        # Process results
         unwatched_series = []
-        for idx, series in enumerate(top_series):
+        for idx, (series, watched) in enumerate(zip(top_series, watch_results)):
             print(f"Checking {idx+1}/{len(top_series)}: {series['title']}")
-            
-            watched = self.check_tautulli_watch_history(series['title'], months)
             if not watched:
                 unwatched_series.append({
                     'title': series['title'],
@@ -449,7 +479,7 @@ class SonarrTautulliAnalyzer:
         return f"{size_bytes:.2f} {size_names[i]}"
 
 
-def main():
+async def main_async():
     parser = argparse.ArgumentParser(description='Analyze Sonarr library and check Tautulli watch history.')
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
     parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N series by size')
@@ -460,7 +490,13 @@ def main():
     args = parser.parse_args()
     
     analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose, debug=args.debug)
-    analyzer.generate_report(args.limit, args.months)
+    try:
+        await analyzer.generate_report(args.limit, args.months)
+    finally:
+        await analyzer.close_session()
+
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
