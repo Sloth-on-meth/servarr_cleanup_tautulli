@@ -69,6 +69,24 @@ class SonarrTautulliAnalyzer:
             print(f"Error connecting to Sonarr: {e}")
             sys.exit(1)
     
+    async def delete_series(self, series_id: int, delete_files: bool = False) -> bool:
+        """Delete a series from Sonarr."""
+        await self.setup_session()
+        url = f"{self.sonarr_url}/api/v3/series/{series_id}"
+        headers = {"X-Api-Key": self.sonarr_api_key}
+        params = {"deleteFiles": str(delete_files).lower()}
+        
+        try:
+            async with self.session.delete(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    print(f"Error deleting series: HTTP {response.status}")
+                    return False
+        except aiohttp.ClientError as e:
+            print(f"Error deleting series: {e}")
+            return False
+    
     async def get_series_size(self, series_id: int) -> int:
         """Get the disk size of a series in bytes."""
         await self.setup_session()
@@ -311,13 +329,13 @@ class SonarrTautulliAnalyzer:
             # to be safe (so it shows up in the report)
             return False
     
-    async def generate_report(self, limit: int = None, months: int = 2) -> None:
-        """Generate a report of unwatched series."""
+    async def get_unwatched_series(self, limit: int = None, months: int = 2) -> List[Dict[str, Any]]:
+        """Get a list of unwatched series."""
         # Use class instance show_count if limit is not provided
         if limit is None:
             limit = self.show_count
             
-        print(f"Generating report of top {limit} series by size that haven't been watched in {months} months...")
+        print(f"Finding top {limit} series by size that haven't been watched in {months} months...")
         
         # Get top series by size
         top_series = await self.get_top_series_by_size(limit)
@@ -336,11 +354,62 @@ class SonarrTautulliAnalyzer:
             print(f"Checking {idx+1}/{len(top_series)}: {series['title']}")
             if not watched:
                 unwatched_series.append({
+                    'id': series['id'],
                     'title': series['title'],
                     'size': series['sizeOnDisk'],
                     'size_human': self.human_readable_size(series['sizeOnDisk']),
                     'path': series.get('path', 'Unknown'),
                 })
+                
+        return unwatched_series
+        
+    async def interactive_cleanup(self, limit: int = None, months: int = 2, delete_files: bool = False) -> None:
+        """Interactive terminal UI for deleting unwatched series."""
+        unwatched_series = await self.get_unwatched_series(limit, months)
+        
+        if not unwatched_series:
+            print("\nNo unwatched series found!")
+            return
+            
+        print(f"\nFound {len(unwatched_series)} series that haven't been watched in {months} months.")
+        print(f"Total space that could be freed: {self.human_readable_size(sum(s['size'] for s in unwatched_series))}")
+        print("\nInteractive deletion mode. For each series, you'll be asked if you want to delete it.")
+        print(f"Delete files option is {'ENABLED' if delete_files else 'DISABLED'}")
+        print("\nPress Enter to continue or Ctrl+C to abort...")
+        input()
+        
+        deleted_count = 0
+        freed_space = 0
+        
+        for idx, series in enumerate(unwatched_series):
+            print(f"\n[{idx+1}/{len(unwatched_series)}] {series['title']}")
+            print(f"Size: {series['size_human']}")
+            print(f"Path: {series['path']}")
+            
+            while True:
+                response = input(f"Delete this series? [y/n]: ").lower()
+                if response in ['y', 'yes']:
+                    print(f"Deleting {series['title']}...")
+                    success = await self.delete_series(series['id'], delete_files)
+                    if success:
+                        print(f"Successfully deleted {series['title']}")
+                        deleted_count += 1
+                        freed_space += series['size']
+                    else:
+                        print(f"Failed to delete {series['title']}")
+                    break
+                elif response in ['n', 'no']:
+                    print(f"Skipping {series['title']}")
+                    break
+                else:
+                    print("Please enter 'y' or 'n'")
+        
+        print(f"\nDeletion complete. Deleted {deleted_count} series.")
+        print(f"Freed space: {self.human_readable_size(freed_space)}")
+    
+    async def generate_report(self, limit: int = None, months: int = 2) -> None:
+        """Generate a report of unwatched series."""
+        unwatched_series = await self.get_unwatched_series(limit, months)
         
         # Generate report
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -349,7 +418,6 @@ class SonarrTautulliAnalyzer:
         with open(report_file, 'w') as f:
             json.dump({
                 'report_date': datetime.datetime.now().isoformat(),
-                'total_series_checked': len(top_series),
                 'unwatched_series_count': len(unwatched_series),
                 'months_threshold': months,
                 'unwatched_series': unwatched_series
@@ -486,12 +554,17 @@ async def main_async():
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode with detailed API responses')
+    parser.add_argument('-t', '--tui', action='store_true', help='Enable terminal UI with interactive deletion')
+    parser.add_argument('--delete-files', action='store_true', help='Delete files when removing series (only with --tui)')
     
     args = parser.parse_args()
     
     analyzer = SonarrTautulliAnalyzer(args.config, verbose=args.verbose, debug=args.debug)
     try:
-        await analyzer.generate_report(args.limit, args.months)
+        if args.tui:
+            await analyzer.interactive_cleanup(args.limit, args.months, args.delete_files)
+        else:
+            await analyzer.generate_report(args.limit, args.months)
     finally:
         await analyzer.close_session()
 
