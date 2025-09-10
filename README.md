@@ -1,6 +1,10 @@
 # Servarr Tautulli Analyzer
 
-A script to analyze your Sonarr/Radarr library, check Tautulli watch history, and generate a report of shows/movies that haven't been watched in the past two months.
+A script to analyze your Sonarr library, check Tautulli watch history, and generate a report of shows that haven't been watched in the past two months.
+
+> **Note:** Radarr functionality is implemented but not yet working. Currently, only Sonarr (TV shows) is supported.
+
+
 
 ## Features
 

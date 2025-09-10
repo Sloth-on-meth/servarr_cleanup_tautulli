@@ -34,11 +34,16 @@ class ServarrTautulliAnalyzer:
         self.verbose = verbose
         self.debug = debug
         self.session = None  # Will be initialized in async context
-        self.mode = mode.lower()
+        self.mode = 'sonarr'  # Force sonarr mode for now
         
-        if self.mode not in ['sonarr', 'radarr']:
-            print(f"Error: Invalid mode '{mode}'. Must be 'sonarr' or 'radarr'.")
-            sys.exit(1)
+        if mode.lower() == 'radarr':
+            print("Radarr mode is temporarily disabled as it's still under development.")
+            print("Using Sonarr mode instead.")
+        
+        # Disabled mode check for now
+        # if self.mode not in ['sonarr', 'radarr']:
+        #     print(f"Error: Invalid mode '{mode}'. Must be 'sonarr' or 'radarr'.")
+        #     sys.exit(1)
         
         if not os.path.exists(config_file):
             print(f"Error: Config file {config_file} not found.")
@@ -553,17 +558,19 @@ class ServarrTautulliAnalyzer:
 async def main_async():
     parser = argparse.ArgumentParser(description='Analyze Sonarr/Radarr library and check Tautulli watch history.')
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
-    parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N items by size')
+    parser.add_argument('-l', '--limit', type=int, default=None, help='Limit to top N series by size')
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode with detailed API responses')
     parser.add_argument('-t', '--tui', action='store_true', help='Enable terminal UI with interactive deletion')
-    parser.add_argument('--delete-files', action='store_true', help='Delete files when removing items (only with --tui)')
-    parser.add_argument('--mode', choices=['sonarr', 'radarr'], default='sonarr', help='Select mode: sonarr for TV shows, radarr for movies')
+    parser.add_argument('--delete-files', action='store_true', help='Delete files when removing series (only with --tui)')
+    # Temporarily disabled Radarr mode
+    # parser.add_argument('--mode', choices=['sonarr', 'radarr'], default='sonarr', help='Select mode: sonarr for TV shows, radarr for movies')
     
     args = parser.parse_args()
     
-    analyzer = ServarrTautulliAnalyzer(args.config, mode=args.mode, verbose=args.verbose, debug=args.debug)
+    # Force sonarr mode since radarr is temporarily disabled
+    analyzer = ServarrTautulliAnalyzer(args.config, mode='sonarr', verbose=args.verbose, debug=args.debug)
     try:
         if args.tui:
             await analyzer.interactive_cleanup(args.limit, args.months, args.delete_files)
