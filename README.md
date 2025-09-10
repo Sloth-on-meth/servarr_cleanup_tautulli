@@ -1,11 +1,11 @@
-# Sonarr Plex Analyzer
+# Sonarr Tautulli Analyzer
 
-This script analyzes your Sonarr library, checks Plex watch history, and generates a report of shows that haven't been watched in the past two months.
+This script analyzes your Sonarr library, checks Tautulli watch history, and generates a report of shows that haven't been watched in the past two months.
 
 ## Features
 
 - Gets the top 100 series from Sonarr by disk size
-- Checks if anyone has watched these series in Plex within a specified time period
+- Checks if anyone has watched these series in Tautulli within a specified time period
 - Generates both JSON and HTML reports of unwatched series
 - Shows how much disk space could be freed by removing unwatched series
 
@@ -13,7 +13,8 @@ This script analyzes your Sonarr library, checks Plex watch history, and generat
 
 - Python 3.6+
 - Sonarr with API access
-- Plex Media Server with API access
+- Tautulli with API access
+- Plex Media Server
 
 ## Installation
 
@@ -32,12 +33,16 @@ This script analyzes your Sonarr library, checks Plex watch history, and generat
 
 ## Configuration
 
-Copy the `config.ini` file and update it with your settings:
+Copy the `config.sample.ini` to `config.ini` and update it with your settings:
 
 ```ini
 [sonarr]
 url = http://localhost:8989
 api_key = YOUR_SONARR_API_KEY
+
+[tautulli]
+url = http://localhost:8181
+api_key = YOUR_TAUTULLI_API_KEY
 
 [plex]
 url = http://localhost:32400
@@ -52,6 +57,13 @@ path = ./reports
 1. Open Sonarr web interface
 2. Go to Settings > General
 3. Find the API Key section
+
+### Getting your Tautulli API key
+
+1. Open Tautulli web interface
+2. Go to Settings > Web Interface
+3. Find the API Key section, or enable API if not already enabled
+4. Copy the API key
 
 ### Getting your Plex token
 

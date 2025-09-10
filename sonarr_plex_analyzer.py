@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Sonarr Plex Analyzer
+Sonarr Tautulli Analyzer
 
-This script analyzes your Sonarr library, checks Plex watch history,
+This script analyzes your Sonarr library, checks Tautulli watch history,
 and generates a report of shows that haven't been watched in the past two months.
 """
 
@@ -16,7 +16,7 @@ import argparse
 from typing import Dict, List, Any, Optional
 from configparser import ConfigParser
 
-class SonarrPlexAnalyzer:
+class SonarrTautulliAnalyzer:
     def __init__(self, config_file: str):
         """Initialize the analyzer with configuration from the config file."""
         self.config = ConfigParser()
@@ -31,7 +31,11 @@ class SonarrPlexAnalyzer:
         self.sonarr_url = self.config.get('sonarr', 'url')
         self.sonarr_api_key = self.config.get('sonarr', 'api_key')
         
-        # Plex configuration
+        # Tautulli configuration
+        self.tautulli_url = self.config.get('tautulli', 'url')
+        self.tautulli_api_key = self.config.get('tautulli', 'api_key')
+        
+        # Plex configuration (still needed for some operations)
         self.plex_url = self.config.get('plex', 'url')
         self.plex_token = self.config.get('plex', 'token')
         
@@ -103,9 +107,9 @@ class SonarrPlexAnalyzer:
             print(f"Error getting Plex library sections: {e}")
             return None
     
-    def check_plex_watch_history(self, series_title: str, months: int = 2) -> bool:
+    def check_tautulli_watch_history(self, series_title: str, months: int = 2) -> bool:
         """
-        Check if anyone has watched the series in the past specified months.
+        Check if anyone has watched the series in the past specified months using Tautulli API.
         Returns True if watched, False if not watched.
         """
         # Calculate the timestamp for X months ago
@@ -113,63 +117,75 @@ class SonarrPlexAnalyzer:
         months_ago = now - datetime.timedelta(days=30 * months)
         unix_timestamp = int(time.mktime(months_ago.timetuple()))
         
-        # Get the TV Shows library section ID
-        section_id = self.get_plex_library_section_id("TV Shows")
-        if not section_id:
-            print("Error: Could not find 'TV Shows' library in Plex.")
-            return False
-        
-        # Search for the series in Plex
-        search_url = f"{self.plex_url}/library/sections/{section_id}/all"
-        headers = {"X-Plex-Token": self.plex_token}
-        params = {"title": series_title}
-        
         try:
-            response = requests.get(search_url, headers=headers, params=params)
-            response.raise_for_status()
-            
-            # Parse XML response
-            from xml.etree import ElementTree
-            root = ElementTree.fromstring(response.content)
-            
-            # Find the series - iterate through all Video elements instead of using XPath with title attribute
-            # to avoid issues with special characters in titles
-            series = None
-            for video in root.findall('.//Video'):
-                if video.get('title') == series_title:
-                    series = video
-                    break
-                    
-            if not series:
-                print(f"Warning: Series '{series_title}' not found in Plex.")
-                return False
-            
-            series_key = series.get('ratingKey')
-            
-            # Get watch history for this series
-            history_url = f"{self.plex_url}/status/sessions/history/all"
+            # First, search for the series in Tautulli
+            search_url = f"{self.tautulli_url}/api/v2"
             params = {
-                "metadataItemID": series_key,
-                "accountID": 0,  # 0 means all accounts
+                "apikey": self.tautulli_api_key,
+                "cmd": "get_library_media_info",
+                "section_type": "show",
+                "search": series_title,
+                "order_column": "title",
+                "order_dir": "asc",
+                "length": 100  # Limit results
             }
             
-            history_response = requests.get(history_url, headers=headers, params=params)
-            history_response.raise_for_status()
+            response = requests.get(search_url, params=params)
+            response.raise_for_status()
+            search_data = response.json()
             
-            history_root = ElementTree.fromstring(history_response.content)
+            if search_data.get('response', {}).get('result') != 'success':
+                print(f"Error searching for '{series_title}' in Tautulli: {search_data.get('response', {}).get('message')}")
+                return False
+            
+            # Find the exact series match
+            series_data = None
+            for item in search_data.get('response', {}).get('data', {}).get('data', []):
+                if item.get('title') == series_title:
+                    series_data = item
+                    break
+            
+            if not series_data:
+                print(f"Warning: Series '{series_title}' not found in Tautulli.")
+                return False
+            
+            # Get the rating key for the series
+            rating_key = series_data.get('rating_key')
+            if not rating_key:
+                print(f"Warning: Could not get rating key for '{series_title}'")
+                return False
+            
+            # Get watch history for this series
+            history_url = f"{self.tautulli_url}/api/v2"
+            params = {
+                "apikey": self.tautulli_api_key,
+                "cmd": "get_history",
+                "grandparent_rating_key": rating_key,  # For TV shows
+                "length": 1000,  # Get a good amount of history
+                "order_column": "date",
+                "order_dir": "desc"  # Most recent first
+            }
+            
+            history_response = requests.get(history_url, params=params)
+            history_response.raise_for_status()
+            history_data = history_response.json()
+            
+            if history_data.get('response', {}).get('result') != 'success':
+                print(f"Error getting history for '{series_title}' in Tautulli: {history_data.get('response', {}).get('message')}")
+                return False
             
             # Check if any item was watched after the cutoff date
-            for item in history_root.findall('.//Video'):
-                viewed_at = int(item.get('viewedAt', 0))
-                if viewed_at >= unix_timestamp:
+            for item in history_data.get('response', {}).get('data', {}).get('data', []):
+                date_watched = int(item.get('date', 0))
+                if date_watched >= unix_timestamp:
                     return True
             
             return False
         except requests.exceptions.RequestException as e:
-            print(f"Error checking Plex watch history for '{series_title}': {e}")
+            print(f"Error checking Tautulli watch history for '{series_title}': {e}")
             return False
         except Exception as e:
-            print(f"Error processing '{series_title}': {e}")
+            print(f"Error processing '{series_title}' in Tautulli: {e}")
             # If there's an error processing this show, we'll assume it's not watched
             # to be safe (so it shows up in the report)
             return False
@@ -186,7 +202,7 @@ class SonarrPlexAnalyzer:
         for idx, series in enumerate(top_series):
             print(f"Checking {idx+1}/{len(top_series)}: {series['title']}")
             
-            watched = self.check_plex_watch_history(series['title'], months)
+            watched = self.check_tautulli_watch_history(series['title'], months)
             if not watched:
                 unwatched_series.append({
                     'title': series['title'],
@@ -333,14 +349,14 @@ class SonarrPlexAnalyzer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Analyze Sonarr library and check Plex watch history.')
+    parser = argparse.ArgumentParser(description='Analyze Sonarr library and check Tautulli watch history.')
     parser.add_argument('-c', '--config', default='config.ini', help='Path to config file')
     parser.add_argument('-l', '--limit', type=int, default=100, help='Limit to top N series by size')
     parser.add_argument('-m', '--months', type=int, default=2, help='Check if watched in the past N months')
     
     args = parser.parse_args()
     
-    analyzer = SonarrPlexAnalyzer(args.config)
+    analyzer = SonarrTautulliAnalyzer(args.config)
     analyzer.generate_report(args.limit, args.months)
 
 
