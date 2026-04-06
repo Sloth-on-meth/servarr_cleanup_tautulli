@@ -202,7 +202,9 @@ class ServarrTautulliAnalyzer:
     async def setup_session(self):
         """Set up the aiohttp session."""
         if self.session is None:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(
+                headers={"Accept-Encoding": "gzip, deflate"}
+            )
 
     async def close_session(self):
         """Close the aiohttp session."""
