@@ -157,24 +157,13 @@ class ServarrTautulliAnalyzer:
 
         items = await self.get_items()
 
-        # Add size information to each item in parallel
-        size_tasks = []
+        # Size is already included in the Sonarr/Radarr response
         for item in items:
-            size_tasks.append(self.get_item_size(item["id"]))
+            if self.mode == "sonarr":
+                item["sizeOnDisk"] = item.get("statistics", {}).get("sizeOnDisk", 0)
+            # radarr already has sizeOnDisk at top level
 
-        # Wait for all size tasks to complete
-        sizes = await asyncio.gather(*size_tasks)
-
-        # Add sizes to item data
-        for i, item in enumerate(items):
-            item["sizeOnDisk"] = sizes[i]
-
-        # Sort by size (descending) and take the top 'limit' items
-        top_items = sorted(items, key=lambda x: x.get("sizeOnDisk", 0), reverse=True)[
-            :limit
-        ]
-
-        return top_items
+        return sorted(items, key=lambda x: x.get("sizeOnDisk", 0), reverse=True)[:limit]
 
     def get_plex_library_section_id(self, library_name: str) -> Optional[int]:
         """Get the Plex library section ID for the given library name."""
@@ -255,189 +244,140 @@ class ServarrTautulliAnalyzer:
             print(f"Error getting library sections from Tautulli: {e}")
             return []
 
-    async def check_tautulli_watch_history(
-        self, item_title: str, months: int = 2
-    ) -> bool:
+    async def fetch_recently_watched(self, months: int = 2) -> set:
         """
-        Check if anyone has watched the series/movie in the past specified months using Tautulli API.
-        Returns True if watched, False if not watched.
+        Fetch all titles watched in the past N months from Tautulli in a single request.
+        Returns a set of lowercase titles.
         """
-        # Calculate the timestamp for X months ago
         now = datetime.datetime.now()
-        months_ago = now - datetime.timedelta(days=30 * months)
-        unix_timestamp = int(time.mktime(months_ago.timetuple()))
+        unix_timestamp = int(
+            time.mktime((now - datetime.timedelta(days=30 * months)).timetuple())
+        )
 
-        if self.verbose:
-            print(
-                f"\nChecking watch history for '{item_title}' in the past {months} months..."
-            )
+        library_sections = await self.get_tautulli_library_sections()
+        section_type = "show" if self.mode == "sonarr" else "movie"
 
-        try:
-            # First, get all library sections from Tautulli
-            library_sections = await self.get_tautulli_library_sections()
+        target_section = None
+        for section in library_sections:
+            if (
+                section.get("section_type") == section_type
+                and section.get("section_name") == self.tautulli_library_name
+            ):
+                target_section = section
+                break
 
-            # Determine the section type based on mode
-            section_type = "show" if self.mode == "sonarr" else "movie"
-
-            # Find the appropriate library section using the name from config
-            target_section = None
+        if not target_section:
+            if self.verbose or self.debug:
+                print(
+                    f"Warning: Could not find library named '{self.tautulli_library_name}', "
+                    f"falling back to first {section_type} library"
+                )
             for section in library_sections:
-                if (
-                    section.get("section_type") == section_type
-                    and section.get("section_name") == self.tautulli_library_name
-                ):
+                if section.get("section_type") == section_type:
                     target_section = section
                     break
 
-            # If we didn't find a section with the configured name, fall back to the first section of the right type
-            if not target_section:
-                if self.verbose or self.debug:
-                    print(
-                        f"Warning: Could not find library named '{self.tautulli_library_name}', falling back to first {section_type} library"
-                    )
-                for section in library_sections:
-                    if section.get("section_type") == section_type:
-                        target_section = section
-                        break
+        if not target_section:
+            print(
+                f"Error: Could not find {section_type.capitalize()} library section in Tautulli."
+            )
+            return set()
 
-            if not target_section:
-                print(
-                    f"Error: Could not find {section_type.capitalize()} library section in Tautulli."
-                )
-                return False
+        section_id = target_section.get("section_id")
+        if self.verbose:
+            print(
+                f"Found {section_type.capitalize()} library: "
+                f"{target_section.get('section_name')} (ID: {section_id})"
+            )
 
-            section_id = target_section.get("section_id")
+        await self.setup_session()
+        url = f"{self.tautulli_url}/api/v2"
+        params = {
+            "apikey": self.tautulli_api_key,
+            "cmd": "get_history",
+            "section_id": section_id,
+            "length": 10000,
+            "order_column": "date",
+            "order_dir": "desc",
+            "after": unix_timestamp,
+        }
 
-            if self.verbose:
-                print(
-                    f"Found {section_type.capitalize()} library section: {target_section.get('section_name')} (ID: {section_id})"
-                )
-
-            # Get watch history for the past X months for this library section
-            await self.setup_session()
-            history_url = f"{self.tautulli_url}/api/v2"
-            params = {
-                "apikey": self.tautulli_api_key,
-                "cmd": "get_history",
-                "section_id": section_id,
-                "length": 10000,  # Get a large amount of history
-                "order_column": "date",
-                "order_dir": "desc",  # Most recent first
-                "after": unix_timestamp,  # Only get history after our cutoff date
-            }
-
-            async with self.session.get(history_url, params=params) as history_response:
-                history_response.raise_for_status()
-                history_data = await history_response.json()
+        try:
+            async with self.session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
 
                 self.debug_request(
                     f"Get Tautulli History (after {datetime.datetime.fromtimestamp(unix_timestamp)})",
-                    history_url,
+                    url,
                     params,
-                    history_response.status,
-                    history_data,
+                    response.status,
+                    data,
                 )
 
-                if history_data.get("response", {}).get("result") != "success":
+                if data.get("response", {}).get("result") != "success":
                     print(
-                        f"Error getting history from Tautulli: {history_data.get('response', {}).get('message')}"
+                        f"Error getting history from Tautulli: "
+                        f"{data.get('response', {}).get('message')}"
                     )
-                    return False
+                    return set()
 
-                # Get all watched items in the past X months
-                watched_items = set()
+                watched = set()
                 watch_counts = {}
-
-                for item in (
-                    history_data.get("response", {}).get("data", {}).get("data", [])
-                ):
-                    # For TV shows, use grandparent_title (show name)
-                    # For movies, use title
-                    if self.mode == "sonarr":
-                        item_name = item.get("grandparent_title")
-                    else:  # radarr
-                        item_name = item.get("title")
-
-                    if item_name:
-                        item_name_lower = item_name.lower()
-                        watched_items.add(item_name_lower)
-                        watch_counts[item_name_lower] = (
-                            watch_counts.get(item_name_lower, 0) + 1
-                        )
+                for item in data.get("response", {}).get("data", {}).get("data", []):
+                    title = (
+                        item.get("grandparent_title")
+                        if self.mode == "sonarr"
+                        else item.get("title")
+                    )
+                    if title:
+                        t = title.lower()
+                        watched.add(t)
+                        watch_counts[t] = watch_counts.get(t, 0) + 1
 
                 if self.verbose or self.debug:
                     item_type_plural = "shows" if self.mode == "sonarr" else "movies"
                     print(
-                        f"Found {len(watched_items)} {item_type_plural} watched in the past {months} months"
+                        f"Found {len(watched)} {item_type_plural} watched in the past {months} months"
                     )
-                    if len(watched_items) > 0:
-                        # Sort by watch count
-                        sorted_items = sorted(
+                    if watched:
+                        sorted_counts = sorted(
                             watch_counts.items(), key=lambda x: x[1], reverse=True
                         )
                         print(f"Top 10 most watched {item_type_plural}:")
-                        for item_name, count in sorted_items[:10]:
-                            print(f"  - '{item_name}': {count} plays")
-
+                        for name, count in sorted_counts[:10]:
+                            print(f"  - '{name}': {count} plays")
                         if self.debug:
                             print(f"\nAll watched {item_type_plural}:")
-                            for item_name in sorted(watched_items):
-                                print(f"  - '{item_name}'")
+                            for name in sorted(watched):
+                                print(f"  - '{name}'")
+                        print()
 
-                        print("\n")
-
-                # Check if our item is in the watched items
-                item_title_lower = item_title.lower()
-
-                # Direct match
-                if item_title_lower in watched_items:
-                    if self.verbose:
-                        print(f"'{item_title}' was watched recently (exact match)")
-                    return True
-
-                # Check for partial matches
-                for watched_item in watched_items:
-                    # Check if the item title is contained in the watched item title
-                    if item_title_lower in watched_item:
-                        if self.verbose:
-                            print(
-                                f"'{item_title}' was watched recently via match '{watched_item}'"
-                            )
-                        return True
-                    # Check if the watched item title is contained in the item title
-                    elif watched_item in item_title_lower:
-                        if self.verbose:
-                            print(
-                                f"'{item_title}' was watched recently via match '{watched_item}'"
-                            )
-                        return True
-                    # Special case for Supernatural
-                    elif (
-                        item_title == "Supernatural" and "supernatural" in watched_item
-                    ):
-                        if self.verbose:
-                            print(
-                                f"'{item_title}' was watched recently via match '{watched_item}'"
-                            )
-                        return True
-
-                if self.verbose:
-                    print(f"No recent watches found for '{item_title}'")
-                return False
+                return watched
         except aiohttp.ClientError as e:
-            print(f"Error checking Tautulli watch history for '{item_title}': {e}")
-            return False
-        except Exception as e:
-            print(f"Error processing '{item_title}' in Tautulli: {e}")
-            # If there's an error processing this item, we'll assume it's not watched
-            # to be safe (so it shows up in the report)
-            return False
+            print(f"Error fetching Tautulli watch history: {e}")
+            return set()
+
+    def _title_was_watched(self, item_title: str, watched_titles: set) -> bool:
+        """Check if item_title matches any entry in the pre-fetched watched_titles set."""
+        t = item_title.lower()
+        if t in watched_titles:
+            if self.verbose:
+                print(f"'{item_title}' was watched recently (exact match)")
+            return True
+        for w in watched_titles:
+            if t in w or w in t:
+                if self.verbose:
+                    print(f"'{item_title}' was watched recently via match '{w}'")
+                return True
+        if self.verbose:
+            print(f"No recent watches found for '{item_title}'")
+        return False
 
     async def get_unwatched_items(
         self, limit: int = None, months: int = 2
     ) -> List[Dict[str, Any]]:
         """Get a list of unwatched series/movies."""
-        # Use class instance item_count if limit is not provided
         if limit is None:
             limit = self.item_count
 
@@ -446,21 +386,17 @@ class ServarrTautulliAnalyzer:
             f"Finding top {limit} {item_type_plural} by size that haven't been watched in {months} months..."
         )
 
-        # Get top items by size
-        top_items = await self.get_top_items_by_size(limit)
+        # Fetch Sonarr/Radarr items and Tautulli history in parallel
+        top_items, watched_titles = await asyncio.gather(
+            self.get_top_items_by_size(limit),
+            self.fetch_recently_watched(months),
+        )
 
-        # Check watch history for each item in parallel
-        watch_tasks = []
-        for item in top_items:
-            watch_tasks.append(self.check_tautulli_watch_history(item["title"], months))
-
-        # Wait for all watch history checks to complete
-        watch_results = await asyncio.gather(*watch_tasks)
-
-        # Process results
         unwatched_items = []
-        for idx, (item, watched) in enumerate(zip(top_items, watch_results)):
-            print(f"Checking {idx+1}/{len(top_items)}: {item['title']}")
+        for idx, item in enumerate(top_items):
+            watched = self._title_was_watched(item["title"], watched_titles)
+            status = "watched" if watched else "NOT watched"
+            print(f"[{idx + 1}/{len(top_items)}] {item['title']} — {status}")
             if not watched:
                 unwatched_items.append(
                     {
