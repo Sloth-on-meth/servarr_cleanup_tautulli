@@ -407,10 +407,8 @@ class ServarrTautulliAnalyzer:
 
         return unwatched_items
 
-    async def interactive_cleanup(
-        self, limit: int = None, months: int = 2, delete_files: bool = False
-    ) -> None:
-        """Interactive terminal UI for deleting unwatched series/movies."""
+    async def interactive_cleanup(self, limit: int = None, months: int = 2) -> None:
+        """Show unwatched series/movies and interactively prompt to delete each one."""
         unwatched_items = await self.get_unwatched_items(limit, months)
 
         item_type = "series" if self.mode == "sonarr" else "movies"
@@ -420,47 +418,51 @@ class ServarrTautulliAnalyzer:
             print(f"\nNo unwatched {item_type} found!")
             return
 
+        total_size = sum(item["size"] for item in unwatched_items)
+        print(f"\n{'─' * 60}")
         print(
-            f"\nFound {len(unwatched_items)} {item_type} that haven't been watched in {months} months."
+            f"  {len(unwatched_items)} {item_type} not watched in the past {months} months"
         )
-        print(
-            f"Total space that could be freed: {self.human_readable_size(sum(item['size'] for item in unwatched_items))}"
-        )
-        print(
-            f"\nInteractive deletion mode. For each {item_type_singular}, you'll be asked if you want to delete it."
-        )
-        print(f"Delete files option is {'ENABLED' if delete_files else 'DISABLED'}")
-        print("\nPress Enter to continue or Ctrl+C to abort...")
+        print(f"  Reclaimable space: {self.human_readable_size(total_size)}")
+        print(f"{'─' * 60}")
+        for idx, item in enumerate(unwatched_items, 1):
+            print(f"  {idx:>3}. {item['title']}  ({item['size_human']})")
+        print(f"{'─' * 60}\n")
+
+        print("You will now be asked about each one. Files will be permanently deleted.")
+        print("Press Enter to start, or Ctrl+C to abort...")
         input()
 
         deleted_count = 0
         freed_space = 0
 
-        for idx, item in enumerate(unwatched_items):
-            print(f"\n[{idx+1}/{len(unwatched_items)}] {item['title']}")
-            print(f"Size: {item['size_human']}")
-            print(f"Path: {item['path']}")
+        for idx, item in enumerate(unwatched_items, 1):
+            print(f"\n[{idx}/{len(unwatched_items)}] {item['title']}")
+            print(f"  Size: {item['size_human']}")
+            print(f"  Path: {item['path']}")
 
             while True:
-                response = input(f"Delete this {item_type_singular}? [y/n]: ").lower()
-                if response in ["y", "yes"]:
-                    print(f"Deleting {item['title']}...")
-                    success = await self.delete_item(item["id"], delete_files)
+                response = input(f"  Delete this {item_type_singular}? [yes/no]: ").strip().lower()
+                if response in ("yes", "y"):
+                    print(f"  Deleting {item['title']}...")
+                    success = await self.delete_item(item["id"], delete_files=True)
                     if success:
-                        print(f"Successfully deleted {item['title']}")
+                        print(f"  Deleted.")
                         deleted_count += 1
                         freed_space += item["size"]
                     else:
-                        print(f"Failed to delete {item['title']}")
+                        print(f"  Failed to delete {item['title']}.")
                     break
-                elif response in ["n", "no"]:
-                    print(f"Skipping {item['title']}")
+                elif response in ("no", "n"):
+                    print(f"  Skipped.")
                     break
                 else:
-                    print("Please enter 'y' or 'n'")
+                    print("  Please enter 'yes' or 'no'.")
 
-        print(f"\nDeletion complete. Deleted {deleted_count} {item_type}.")
-        print(f"Freed space: {self.human_readable_size(freed_space)}")
+        print(f"\n{'─' * 60}")
+        print(f"  Deleted {deleted_count} {item_type}.")
+        print(f"  Space freed: {self.human_readable_size(freed_space)}")
+        print(f"{'─' * 60}")
 
     async def generate_report(self, limit: int = None, months: int = 2) -> None:
         """Generate a report of unwatched series/movies."""
@@ -604,15 +606,9 @@ async def main_async():
         help="Enable debug mode with detailed API responses",
     )
     parser.add_argument(
-        "-t",
-        "--tui",
+        "--report-only",
         action="store_true",
-        help="Enable terminal UI with interactive deletion",
-    )
-    parser.add_argument(
-        "--delete-files",
-        action="store_true",
-        help="Delete files when removing series (only with --tui)",
+        help="Generate JSON/HTML report without interactive deletion prompt",
     )
     # Temporarily disabled Radarr mode
     # parser.add_argument('--mode', choices=['sonarr', 'radarr'], default='sonarr', help='Select mode: sonarr for TV shows, radarr for movies')
@@ -624,12 +620,10 @@ async def main_async():
         args.config, mode="sonarr", verbose=args.verbose, debug=args.debug
     )
     try:
-        if args.tui:
-            await analyzer.interactive_cleanup(
-                args.limit, args.months, args.delete_files
-            )
-        else:
+        if args.report_only:
             await analyzer.generate_report(args.limit, args.months)
+        else:
+            await analyzer.interactive_cleanup(args.limit, args.months)
     finally:
         await analyzer.close_session()
 
