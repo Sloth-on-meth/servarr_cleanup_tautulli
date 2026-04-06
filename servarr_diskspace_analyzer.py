@@ -64,7 +64,7 @@ class ServarrTautulliAnalyzer:
         if self.mode == "sonarr":
             self.servarr_url = self.config.get("sonarr", "url")
             self.servarr_api_key = self.config.get("sonarr", "api_key")
-            self.item_count = int(self.config.get("sonarr", "show_count", fallback=100))
+            self.item_count = None  # None means all series
             self.item_type = "series"
             self.tautulli_library_name = self.config.get(
                 "tautulli", "tv_library_name", fallback="TV Shows"
@@ -72,9 +72,7 @@ class ServarrTautulliAnalyzer:
         else:  # radarr
             self.servarr_url = self.config.get("radarr", "url")
             self.servarr_api_key = self.config.get("radarr", "api_key")
-            self.item_count = int(
-                self.config.get("radarr", "movie_count", fallback=100)
-            )
+            self.item_count = None  # None means all movies
             self.item_type = "movie"
             self.tautulli_library_name = self.config.get(
                 "tautulli", "movie_library_name", fallback="Films"
@@ -150,11 +148,8 @@ class ServarrTautulliAnalyzer:
             print(f"Error getting {self.item_type} size: {e}")
             return 0
 
-    async def get_top_items_by_size(self, limit: int = None) -> List[Dict[str, Any]]:
-        """Get the top series/movies by disk size."""
-        if limit is None:
-            limit = self.item_count
-
+    async def get_items_by_size(self, limit: int = None) -> List[Dict[str, Any]]:
+        """Get all series/movies sorted by disk size, optionally limited to top N."""
         items = await self.get_items()
 
         # Size is already included in the Sonarr/Radarr response
@@ -163,7 +158,8 @@ class ServarrTautulliAnalyzer:
                 item["sizeOnDisk"] = item.get("statistics", {}).get("sizeOnDisk", 0)
             # radarr already has sizeOnDisk at top level
 
-        return sorted(items, key=lambda x: x.get("sizeOnDisk", 0), reverse=True)[:limit]
+        sorted_items = sorted(items, key=lambda x: x.get("sizeOnDisk", 0), reverse=True)
+        return sorted_items[:limit] if limit is not None else sorted_items
 
     def get_plex_library_section_id(self, library_name: str) -> Optional[int]:
         """Get the Plex library section ID for the given library name."""
@@ -379,16 +375,17 @@ class ServarrTautulliAnalyzer:
     ) -> List[Dict[str, Any]]:
         """Get a list of unwatched series/movies."""
         if limit is None:
-            limit = self.item_count
+            limit = self.item_count  # None means no limit (all items)
 
         item_type_plural = "series" if self.mode == "sonarr" else "movies"
+        scope = f"top {limit}" if limit is not None else "all"
         print(
-            f"Finding top {limit} {item_type_plural} by size that haven't been watched in {months} months..."
+            f"Finding {scope} {item_type_plural} by size that haven't been watched in {months} months..."
         )
 
         # Fetch Sonarr/Radarr items and Tautulli history in parallel
         top_items, watched_titles = await asyncio.gather(
-            self.get_top_items_by_size(limit),
+            self.get_items_by_size(limit),
             self.fetch_recently_watched(months),
         )
 
